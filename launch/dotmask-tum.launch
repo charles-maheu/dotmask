@@ -12,8 +12,8 @@
    <param name="use_sim_time" type="bool" value="True"/>
      
    <!-- Choose visualization -->
-   <arg name="rviz" default="false" />
-   <arg name="rtabmapviz" default="true" /> 
+   <arg name="rviz" default="true" />
+   <arg name="rtabmapviz" default="false" /> 
  
   <!-- TF FRAMES -->
   <node pkg="tf" type="static_transform_publisher" name="world_to_map" 
@@ -25,7 +25,7 @@
     <!-- Odometry -->
     <node pkg="rtabmap_ros" type="rgbd_odometry" name="rgbd_odometry" output="screen">
       <remap from="rgb/image"       to="/camera/rgb/image_color"/>
-      <remap from="depth/image"     to="/camera/depth_registered/dynamic_masked_image_raw"/>
+      <remap from="depth/image"     to="/camera/depth_registered/masked_image_raw"/>
       <remap from="rgb/camera_info" to="/camera/rgb/camera_info"/>
 	  
       <param name="Odom/Strategy" type="string" value="0"/>      <!-- 0=Frame-to-Map, 1=Frame-to-KeyFrame -->
@@ -47,7 +47,13 @@
      
       <param name="Rtabmap/StartNewMapOnLoopClosure" type="string" value="true"/>
       <param name="Kp/DetectorStrategy" type="string" value="0"/>
-      <param name="RGBD/CreateOccupancyGrid" type="string" value="false"/>
+      <param name="RGBD/CreateOccupancyGrid" type="string" value="true"/>
+            <param name="Grid/FromDepth"                type="string"   value="1"/> <!-- OccupancyGrid from stereo cameras (disable for Lidars) -->
+            <param name="Grid/NormalsSegmentation"      type="string"   value="false" />
+            <param name="Grid/MaxGroundHeight"          type="string"   value="-1.4" />
+            <param name="Grid/MinGroundHeight"          type="string"   value="-5" />
+            <param name="Grid/MaxObstacleHeight"        type="string"   value="1.9" />
+            <!-- <param name="Grid/RangeMax"                 type="string"   value="3" /> -->
       <param name="Rtabmap/CreateIntermediateNodes" type="string" value="true"/>
 
       <param name="frame_id" type="string" value="kinect"/>

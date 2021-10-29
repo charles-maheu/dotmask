@@ -1,4 +1,4 @@
-
+#!/usr/bin/env python3
 from __future__ import absolute_import
 from __future__ import print_function
 
@@ -16,7 +16,6 @@ import argparse
 import matplotlib.pyplot as plt
 from scipy import ndimage
 import copy
-
 '''
 # Yoloact imports
 sys.path.append('../nn/yolact/')
@@ -31,7 +30,7 @@ import torch.backends.cudnn as cudnn
 '''
 
 # ROS
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CameraInfo
 import std_msgs.msg
 from std_msgs.msg import String
 import tf
@@ -63,18 +62,13 @@ class InferenceConfig(config.Config):
     NUM_CLASSES = 1 + 80
 '''
 
-def parse_args(argv=None):
-    parser = argparse.ArgumentParser(
-        description='ISM-vSLAM')
-    parser.add_argument('--input',
-                        default='tum', type=str,
-                        help='Input device or dataset ( xtion / tum )')
-    parser.add_argument('--nn',
-                        default='yolact', type=str,
-                        help='Neural network to run ( yolact / mrcnn )')
-    parser.set_defaults(input='tum', nn='yolact')
+def parse_args():
+    parser = argparse.ArgumentParser(description='DOTmask - Real time masking for dynamic objects with depth-enabled cameras')
+    parser.add_argument('--nn', action="store", default='yolact', type=str,
+                        help='Neural network to run', required=False)
     global args
-    args = parser.parse_args(argv)
+    args = parser.parse_args(rospy.myargv()[4:])
+
 
 def add_padding(img, pad_l, pad_t, pad_r, pad_b):
     height, width = img.shape
@@ -98,17 +92,17 @@ def add_padding(img, pad_l, pad_t, pad_r, pad_b):
 
 class DOTMask():
 
-    def __init__(self, nn, input_device):
+    def __init__(self, nn):
         """
         Initialisation function
         """
     
-        print('Loading model...')
+        rospy.loginfo('Loading model...')
         self.nn = nn
         if self.nn == 'yolact':
-            print("Selected NN: Yolact")
+            rospy.loginfo("Selected NN: Yolact")
             # Yoloact imports
-            sys.path.append('../nn/yolact/')
+            sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact/')
             from yolact import Yolact
             from data import cfg, set_cfg, set_dataset
             import torch
@@ -120,16 +114,16 @@ class DOTMask():
             cfg.mask_proto_debug = False
             cfg.rescore_bbox = True
             self.net = Yolact()
-            self.net.load_weights("../weights/yolact_resnet50_54_800000.pth")
+            self.net.load_weights("/home/introlab/catkin_ws_dotmask/src/dotmask/weights/yolact_resnet50_54_800000.pth")
             #self.net.load_weights("../weights/yolact_resnet50_54_800000.pth")
             self.net.eval()
             cudnn.fastest = True
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
             self.net = self.net.cuda()
         elif self.nn == 'yolact++':
-            print("Selected NN: Yolact++")
+            rospy.loginfo("Selected NN: Yolact++")
             # Yoloact imports
-            sys.path.append('../nn/yolact/')
+            sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact/')
             from yolact import Yolact
             from data import cfg, set_cfg, set_dataset
             import torch
@@ -141,14 +135,14 @@ class DOTMask():
             cfg.mask_proto_debug = False
             cfg.rescore_bbox = True
             self.net = Yolact()
-            self.net.load_weights("../weights/yolact_plus_resnet50_54_800000.pth")
+            self.net.load_weights("/home/introlab/catkin_ws_dotmask/src/dotmask/weights/yolact_plus_resnet50_54_800000.pth")
             #self.net.load_weights("../weights/yolact_resnet50_54_800000.pth")
             self.net.eval()
             cudnn.fastest = True
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
             self.net = self.net.cuda()
         elif self.nn == 'mrcnn':
-            print("Selected NN: Mask-RCNN")
+            rospy.loginfo("Selected NN: Mask-RCNN")
              # Keras
             import keras
             from keras.models import Model
@@ -156,7 +150,7 @@ class DOTMask():
             K.common.set_image_dim_ordering('tf')
 
             # Mask-RCNN
-            sys.path.append('../nn/Mask_RCNN/')
+            sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/Mask_RCNN/')
             from mrcnn import config
             from mrcnn import utils 
             from mrcnn import model as modellib
@@ -165,52 +159,33 @@ class DOTMask():
             self.config = InferenceConfig()
             self.model = modellib.MaskRCNN(
                 mode="inference", 
-                model_dir="../weights/",#"../nn/Mask_RCNN/mrcnn/", 
+                model_dir="/home/introlab/catkin_ws_dotmask/src/dotmask/weights/",#"../nn/Mask_RCNN/mrcnn/", 
                 config=self.config)
 
             # Load weights trained on MS-COCO
-            self.model.load_weights("../weights/mask_rcnn_coco.h5", by_name=True)
+            self.model.load_weights("/home/introlab/catkin_ws_dotmask/src/dotmask/weights/mask_rcnn_coco.h5", by_name=True)
         
         else:
-            print("no nn defined")
+            rospy.logerr("No nn defined")
 
         self.bridge = CvBridge()
-
         self._max_inactive_frames = 10 # Maximum nb of frames before destruction
         self.next_object_id = 0 # ID for next object
         self.objects_dict = {} # Detected objects dictionary
         self.var_init = 0
         self.cam_pos_qat = np.array([[0.,0.,0.],[0.,0.,0.,1.]])
         self.cam_pos = np.array([[0.,0.,0.],[0.,0.,0.]])
-        
-        self.dilatation = 1
-        self.score_threshold = 0.1
-        self.max_number_observation = 5
-        self.human_threshold = 0.01
-        self.object_threshold = 0.3
-        self.iou_threshold = 0.9
-        self.selected_classes = [0, 56, 67]
-        self.masked_id = []
-
-        #if input_device == 'xtion':
-        #    self.human_threshold = 0.1
-        #    self.iou_threshold = 0.3
-
-        self.depth_image_pub = rospy.Publisher(
-            "/camera/depth_registered/masked_image_raw", 
-            Image,queue_size=1)
-
-        self.dynamic_depth_image_pub = rospy.Publisher(
-            "/camera/depth_registered/dynamic_masked_image_raw", 
-            Image,queue_size=1)
 
         self.frame = []
         self.depth_frame = []
         self.msg_header = std_msgs.msg.Header()
         self.depth_msg_header = std_msgs.msg.Header()
+        self.camera_info_K = np.array(CameraInfo().K).reshape([3, 3])
+        #self.camera_info_D = CameraInfo().D
 
-        # Class names COCO dataset
-        self.class_names = [
+        # Class names COCO dataset - Selected things are objects/obstacles that could move on a map
+        # Not used, only for reference
+        """self.class_names = [
             'person', 'bicycle', 'car', 'motorcycle',
             'airplane', 'bus', 'train', 'truck', 'boat',
             'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 
@@ -227,7 +202,25 @@ class DOTMask():
             'mouse', 'remote', 'keyboard', 'cell phone', 'microwave', 
             'oven', 'toaster', 'sink', 'refrigerator', 'book',
             'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 
-            'toothbrush']
+            'toothbrush']"""
+        
+        #Parameters
+        self.dilatation = rospy.get_param('~dilatation', 10)
+        self.score_threshold = rospy.get_param('~score_threshold', 0.1)
+        self.max_number_observation = rospy.get_param('~max_number_observation', 5)
+        self.human_threshold = rospy.get_param('~human_threshold', 0.01)
+        self.object_threshold = rospy.get_param('~object_threshold', 0.3)
+        self.iou_threshold = rospy.get_param('~iou_threshold', 0.9)
+        self.masked_id = []
+        #if input_device == 'xtion':
+        #    self.human_threshold = 0.1
+        #    self.iou_threshold = 0.3
+
+        self.depth_image_pub = rospy.Publisher("depth_masked_image", Image,queue_size=1)
+        self.dynamic_depth_image_pub = rospy.Publisher("depth_dynamic_masked_image", Image,queue_size=1)
+        self.colored_detection = rospy.Publisher("colored_detection", Image,queue_size=1)
+
+        
         
     def get_active(self, val):
         for key in self.objects_dict:
@@ -342,26 +335,26 @@ class DOTMask():
         """Apply the given mask to the image.
         """
         
-        image = copy.deepcopy(image_in)
-        image_static = copy.deepcopy(image_in)
+        image_masked = copy.deepcopy(image_in)
+        image_dynamic_masked = copy.deepcopy(image_in)
         for i in range(masks.shape[0]):
             is_active = self.get_active(i)
             mask = masks[i, :, :]
             mask = ndimage.binary_dilation(mask, iterations=self.dilatation)
             if is_active == 1:
-                image[:, :] = np.where(mask == 1,
+                image_masked[:, :] = np.where(mask == 1,
                                     0,
-                                    image[:, :])
-                image_static[:, :] = np.where(mask == 1,
+                                    image_masked[:, :])
+                image_dynamic_masked[:, :] = np.where(mask == 1,
                                     0,
-                                    image[:, :])
+                                    image_masked[:, :])
             else:
-                image[:, :] = np.where(mask == 1,
+                image_masked[:, :] = np.where(mask == 1,
                                     0,
-                                    image[:, :])
+                                    image_masked[:, :])
 
             
-        return image_static, image
+        return image_dynamic_masked, image_masked
 
     def mask_dilatation(self, masks):
 
@@ -370,7 +363,7 @@ class DOTMask():
         for i in range(mask.shape[0]):
             mask[i] = ndimage.binary_dilation(mask[i], iterations=self.dilatation)
 
-        print("Numpy dilation time : ", - (timebefore - time.time()))
+        rospy.loginfo("Numpy dilation time : ", - (timebefore - time.time()))
         return mask
 
     def mask_dilatation_cv(self, masks):
@@ -382,7 +375,7 @@ class DOTMask():
             mask[i] = cv2.dilate(mask[i],kernel, iterations=self.dilatation)
         
 
-        print("cv2 dilation time : ", - (timebefore - time.time()))
+        rospy.loginfo("cv2 dilation time : ", - (timebefore - time.time()))
         return mask
 
     def get_masking_depth(self, image, mask):
@@ -485,25 +478,17 @@ class DOTMask():
         for i in range(len(rois)):    
             # 3D centroids from depth frame
             
-            if args.input == 'tum':
-                fx = 525.0  # focal length x
-                fy = 525.0  # focal length y
-                cx = 319.5  # optical center x
-                cy = 239.5  # optical center y
-            elif args.input == 'xtion':    
-                # Asus xtion sensor 
-                fx = 525
-                fy = 525
-                cx = 319.5
-                cy = 239.5
-            elif args.input == 'zed':
-                # Zed sensor left img vga
-                fx = 350.113
-                fy = 350.113
-                cx = 336.811
-                cy = 190.357
+            # Using camera info from camera info topic
+            # Using K matrix = [[fx, 0, cx],
+            #                   [0, fy, cy],
+            #                   [0, 0, 1]]
+            if not self.camera_info_K.any():
+                rospy.logerr("Camera info K matrix empty. Check that the camera info topic is correctly set and publishes a valid K.")
             else:
-                print("No valid input")
+                fx = self.camera_info_K[0,0]
+                fy = self.camera_info_K[1,1]
+                cx = self.camera_info_K[0,2]
+                cy = self.camera_info_K[1,2]
             
             # Translation from depth pixel to local point
             if mask_depth[i] == -1:
@@ -524,19 +509,6 @@ class DOTMask():
         Function for live stream video masking
         """
         
-        bar = [
-                " Waiting for frame [=     ]              ",
-                " Waiting for frame [ =    ]              ",
-                " Waiting for frame [  =   ]              ",
-                " Waiting for frame [   =  ]              ",
-                " Waiting for frame [    = ]              ",
-                " Waiting for frame [     =]              ",
-                " Waiting for frame [    = ]              ",
-                " Waiting for frame [   =  ]              ",
-                " Waiting for frame [  =   ]              ",
-                " Waiting for frame [ =    ]              ",
-            ]
-        idx = 0
         while not rospy.is_shutdown():
             start_time = time.time()
             self.masked_id = []
@@ -545,8 +517,7 @@ class DOTMask():
 
             if len(current_frame)==0  or  len(current_depth_frame)==0 :
 
-                print(bar[idx % len(bar)], end= "\r")
-                idx = idx +1
+                rospy.loginfo_once("DOTmask ready, waiting for frame")
                 time.sleep(0.1)
             
             else:
@@ -635,7 +606,7 @@ class DOTMask():
                         self.delete_object(i)
                         
                 else : 
-                    current_centroids, current_dimensions = self.mask_to_centroid(r['rois'],mask_depth)
+                    current_centroids, current_dimensions = self.mask_to_centroid(r['rois'], mask_depth)
 
                     if not self.objects_dict:
                         if not len(current_centroids)==0:
@@ -747,10 +718,15 @@ class DOTMask():
                 DITS = self.bridge.cv2_to_imgmsg(result_depth_image,'32FC1')
                 DITS.header = self.depth_msg_header
                 self.depth_image_pub.publish(DITS)
+
+                DITS = Image()
+                DITS = self.bridge.cv2_to_imgmsg(result_depth_image,'32FC1')
+                DITS.header = self.depth_msg_header
+                self.colored_detection.publish(DITS)
                 
                 print_time = time.time()
 
-                #print(" NN pred time: ", format(nn_pred_time - nn_start_time, '.3f'),", NN post time: ", format(nn_time - nn_pred_time, '.3f'),", NN time: ", format(nn_time - start_time, '.3f'), ", Kalman time: ", format(kalman_time - nn_time, '.3f'),
+                #rospy.log(" NN pred time: ", format(nn_pred_time - nn_start_time, '.3f'),", NN post time: ", format(nn_time - nn_pred_time, '.3f'),", NN time: ", format(nn_time - start_time, '.3f'), ", Kalman time: ", format(kalman_time - nn_time, '.3f'),
                 #", Print time: ", format(print_time - kalman_time, '.3f'), ", Total time: ", format(time.time() - start_time, '.3f'),
                 #", FPS :", format(1/(time.time() - start_time), '.2f'), end="\r")
 
@@ -765,37 +741,25 @@ class DOTMask():
         #32FC1 for asus xtion
         #8UC1 forkicect
         self.depth_frame = self.bridge.imgmsg_to_cv2(msg, "32FC1")
+    
+    def camera_info_callback(self, camera_info):
+        self.camera_info_K = np.array(camera_info.K).reshape([3, 3])
+        #self.camera_info_D = np.array(camera_info.D) #Not needed
 
 
 if __name__ == '__main__':
-    #arg = sys.argv
     parse_args()
 
-    dotmask = DOTMask(args.nn, args.input)
+    dotmask = DOTMask(args.nn)
     rospy.init_node('ism_node', anonymous=True)
 
     listener = tf.TransformListener()
 
-    if args.input=='tum':
-        print("Running on tum dataset")
-        dotmask.tf_camera = '/openni_rgb_optical_frame'
-        rospy.Subscriber("/camera/rgb/image_color", Image, dotmask.image_callback)
-        rospy.Subscriber("/camera/depth/image", 
-                    Image, dotmask.depth_image_callback)
-    elif args.input=='xtion':
-        print("Running on asus xtion")
-        dotmask.tf_camera = '/camera_rgb_optical_frame'
-        rospy.Subscriber("/camera/rgb/image_rect_color", Image, dotmask.image_callback)
-        rospy.Subscriber("/camera/depth_registered/image_raw", 
-                    Image, dotmask.depth_image_callback)
-    elif args.input=='zed':
-        print("Running on xamera zed")
-        dotmask.tf_camera = '/zed_left_camera_optical_frame'
-        rospy.Subscriber("/zed/zed_node/rgb/image_rect_color", Image, dotmask.image_callback)
-        rospy.Subscriber("/zed/zed_node/depth/depth_registered", 
-                    Image, dotmask.depth_image_callback)
-    else:
-        print("No input selected")
+    #Use remap in a ROS launch file to launch this node with custom subscribers
+    dotmask.tf_camera = rospy.get_param('~camera_optical_frame')
+    rospy.Subscriber("rgb/image", Image, dotmask.image_callback)
+    rospy.Subscriber("rgb/camera_info", CameraInfo, dotmask.camera_info_callback)
+    rospy.Subscriber("depth/image", Image, dotmask.depth_image_callback)
 
     if args.nn == "yolact" or args.nn == "yolact++":
         from utils.augmentations import BaseTransform, FastBaseTransform, Resize
@@ -811,4 +775,4 @@ if __name__ == '__main__':
     try:
         rospy.spin()
     except rospy.ROSInterruptException:
-        print("Shutting down artificial neural network")
+        rospy.loginfo("Shutting down artificial neural network")
