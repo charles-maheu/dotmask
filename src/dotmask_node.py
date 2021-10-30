@@ -16,18 +16,6 @@ import argparse
 import matplotlib.pyplot as plt
 from scipy import ndimage
 import copy
-'''
-# Yoloact imports
-sys.path.append('../nn/yolact/')
-
-from utils.augmentations import BaseTransform, FastBaseTransform, Resize
-from yolact import Yolact
-from data import COCODetection, get_label_map, MEANS, COLORS
-from layers.output_utils import postprocess
-from data import cfg, set_cfg, set_dataset
-import torch
-import torch.backends.cudnn as cudnn
-'''
 
 # ROS
 from sensor_msgs.msg import Image, CameraInfo
@@ -38,9 +26,6 @@ import roslib
 
 # EKF
 from kalmanFilter import extendedKalmanFilter
-
-# Root directory of the project
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 '''Uncomment for mask rcnn
  # Keras
@@ -64,8 +49,8 @@ class InferenceConfig(config.Config):
 
 def parse_args():
     parser = argparse.ArgumentParser(description='DOTmask - Real time masking for dynamic objects with depth-enabled cameras')
-    parser.add_argument('--nn', action="store", default='yolact', type=str,
-                        help='Neural network to run', required=False)
+    parser.add_argument('--nn', action="store", default='yolact_edge', type=str,
+                        help='Neural network to run ( mrcnn / yolact/ yolact++ / yolact_edge )', required=False)
     global args
     args = parser.parse_args(rospy.myargv()[4:])
 
@@ -141,6 +126,37 @@ class DOTMask():
             cudnn.fastest = True
             torch.set_default_tensor_type('torch.cuda.FloatTensor')
             self.net = self.net.cuda()
+
+        elif self.nn == 'yolact_edge':
+            rospy.loginfo("Selected NN: Yolact_edge")
+            #Yoloact_edge imports
+            """
+            To fix "AttributeError: 'Config' object has no attribute 'mask_proto_debug'"
+            https://github.com/dbolya/yolact/issues/256
+            For a lack of better solution (or rather inability to find one), I just commented calling mask_proto_debug out in output_utils.py line 63:
+                #if cfg.mask_proto_debug:
+                #    np.save('scripts/proto.npy', proto_data.cpu().numpy())
+
+            """
+            sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact_edge/yolact_edge')
+            sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact_edge/')
+            from yolact import Yolact
+            from data import cfg, set_cfg, set_dataset
+            import torch
+            import torch.backends.cudnn as cudnn
+
+            set_cfg("yolact_edge_resnet50_config")
+            cfg.eval_mask_branch = True
+            cfg.mask_proto_debug = False
+            cfg.rescore_bbox = True
+            self.net = Yolact()
+            self.net.load_weights("/home/introlab/catkin_ws_dotmask/src/dotmask/weights/yolact_edge_resnet50_54_800000.pth")
+            self.net.eval()
+            cudnn.fastest = True
+            torch.set_default_tensor_type('torch.cuda.FloatTensor')
+            self.net = self.net.cuda()
+
+
         elif self.nn == 'mrcnn':
             rospy.loginfo("Selected NN: Mask-RCNN")
              # Keras
@@ -204,7 +220,9 @@ class DOTMask():
             'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 
             'toothbrush']"""
         
-        #Parameters
+        #Parameters - From launch file param or default
+
+        self.selected_classes = [0] #, 56, 67]
         self.dilatation = rospy.get_param('~dilatation', 10)
         self.score_threshold = rospy.get_param('~score_threshold', 0.1)
         self.max_number_observation = rospy.get_param('~max_number_observation', 5)
@@ -228,60 +246,17 @@ class DOTMask():
                 return self.objects_dict[key]["activeObject"]
         return "Key not exist"
 
-    def class_selection(self, masks_in, class_ids):
-        """
-        Function for Mask class selection (Selected classes : 1,40,41,42,57)
-        """
-        if len(masks_in.shape) > 1:
-            masks=copy.deepcopy(masks_in)
-            x = np.zeros([class_ids.shape[0], masks.shape[1], masks.shape[2]])
-            for l in range(masks.shape[0]):
-                if (class_ids[l] == 0 or class_ids[l] == 39 or 
-                    class_ids[l] == 56):
-                    x[l, :, :] = masks[l, :, :]
-                else:
-                    x[l, :, :] = 0
-            return x
-        else:
-            x = np.zeros([1, 480, 640])
-            return x
-
-    def static_masks_selection(self, masks_in, class_ids):
-        """
-        Function for static Mask class selection
-        """
-        if len(masks_in.shape) > 1:
-            masks=copy.deepcopy(masks_in)
-            x = np.zeros([masks.shape[0], masks.shape[1], masks.shape[2]])
-            for i in self.objects_dict:
-                if not np.in1d(i, self.masked_id):
-                    if self.objects_dict[i]["activeObject"] == 1 and self.objects_dict[i]["maskID"] < masks.shape[0] and (class_ids[self.objects_dict[i]["maskID"]] == 0 or class_ids[self.objects_dict[i]["maskID"]] == 39 or 
-                        class_ids[self.objects_dict[i]["maskID"]] == 56):
-                        x[self.objects_dict[i]["maskID"], :, :] = masks[self.objects_dict[i]["maskID"], :, :]
-                        
-                    elif self.objects_dict[i]["activeObject"] == 0 and self.objects_dict[i]["maskID"] < masks.shape[0]:
-                        x[self.objects_dict[i]["maskID"], :, :] = 0
-                    else:
-                        pass
-                    self.masked_id.append(i)
-            return x
-        else:
-            x = np.zeros([1, 480, 640])
-            return x
-
     def read_objects_pose(self):
 
         for i in self.objects_dict:
-            
             if self.objects_dict[i]["classID"]==0:
                 object_type = "Person"
-            elif self.objects_dict[i]["classID"]==39:
-                object_type = "Bottle"
-            elif self.objects_dict[i]["classID"]==56:
-                object_type = "Chair"
+            # elif self.objects_dict[i]["classID"]==39:
+            #     object_type = "Bottle"
+            # elif self.objects_dict[i]["classID"]==56:
+            #     object_type = "Chair"
             else:
                 object_type = "Nan"
-
             try:
                 (self.objects_dict[i]["worldPose"],rot) = listener.lookupTransform('/map',object_type+'_'+str(i), rospy.Time(0))
             except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
@@ -289,13 +264,13 @@ class DOTMask():
                         
     def handle_objects_pose(self):
         for i in self.objects_dict:
-            if self.objects_dict[i]["classID"]==0 or self.objects_dict[i]["classID"]==39 or self.objects_dict[i]["classID"]==56:
+            if self.objects_dict[i]["classID"]==0 : #or self.objects_dict[i]["classID"]==39 or self.objects_dict[i]["classID"]==56:
                 if self.objects_dict[i]["classID"]==0:
                     object_type = "Person"
-                elif self.objects_dict[i]["classID"]==39:
-                    object_type = "Bottle"
-                elif self.objects_dict[i]["classID"]==56:
-                    object_type = "Chair"
+                # elif self.objects_dict[i]["classID"]==39:
+                #     object_type = "Bottle"
+                # elif self.objects_dict[i]["classID"]==56:
+                #     object_type = "Chair"
                 else:
                     object_type = "Nan"
                 
@@ -332,58 +307,26 @@ class DOTMask():
         return iou
 
     def apply_depth_image_masking(self, image_in, masks):
-        """Apply the given mask to the image.
         """
-        
+        Apply the given mask to the image.
+        """
         image_masked = copy.deepcopy(image_in)
         image_dynamic_masked = copy.deepcopy(image_in)
+
         for i in range(masks.shape[0]):
-            is_active = self.get_active(i)
             mask = masks[i, :, :]
             mask = ndimage.binary_dilation(mask, iterations=self.dilatation)
-            if is_active == 1:
-                image_masked[:, :] = np.where(mask == 1,
-                                    0,
-                                    image_masked[:, :])
-                image_dynamic_masked[:, :] = np.where(mask == 1,
-                                    0,
-                                    image_masked[:, :])
-            else:
-                image_masked[:, :] = np.where(mask == 1,
-                                    0,
-                                    image_masked[:, :])
-
-            
+            image_masked[:, :] = np.where(mask == 1, 0, image_masked[:, :])
+            if self.get_active(i):
+                image_dynamic_masked[:, :] = np.where(mask == 1, 0, image_masked[:, :])
         return image_dynamic_masked, image_masked
 
-    def mask_dilatation(self, masks):
-
-        timebefore = time.time()
-        mask=copy.deepcopy(masks)
-        for i in range(mask.shape[0]):
-            mask[i] = ndimage.binary_dilation(mask[i], iterations=self.dilatation)
-
-        rospy.loginfo("Numpy dilation time : ", - (timebefore - time.time()))
-        return mask
-
-    def mask_dilatation_cv(self, masks):
-
-        timebefore = time.time()
-        mask=copy.deepcopy(masks)
-        kernel = np.ones((3,3))
-        for i in range(mask.shape[0]):
-            mask[i] = cv2.dilate(mask[i],kernel, iterations=self.dilatation)
-        
-
-        rospy.loginfo("cv2 dilation time : ", - (timebefore - time.time()))
-        return mask
-
     def get_masking_depth(self, image, mask):
-        """Apply the given mask to the image.
+        """
+        Apply the given mask to the image.
         """
         x = np.zeros([image.shape[0], image.shape[1]])
         y = np.zeros(mask.shape[0])
-
         for i in range(mask.shape[0]):
             x[:, :] = np.where(mask[i,:,:] != 1,
                                 0,
@@ -397,7 +340,6 @@ class DOTMask():
                 y[i] = 0
             else:
                 y[i] = (x[:, :].sum()/sum(sum((x[:, :]!=0))))
-        
         return y
 
     def add_object(self, centroid, dimensions, mask_id, class_id, mask_old, rois_old):
@@ -452,7 +394,7 @@ class DOTMask():
         R = np.array([[ 0.8,  0,  0],
                       [ 0,  0.8,  0],
                       [ 0,  0,  1.2]])
-
+        
         self.objects_dict.update({self.next_object_id : {
             "kalmanFilter" : extendedKalmanFilter(x, P, F, H, Q, R),
             "centroid" : centroid,
@@ -479,9 +421,9 @@ class DOTMask():
             # 3D centroids from depth frame
             
             # Using camera info from camera info topic
-            # Using K matrix = [[fx, 0, cx],
-            #                   [0, fy, cy],
-            #                   [0, 0, 1]]
+            # K matrix = [[fx,  0,  cx],
+            #             [0,   fy, cy],
+            #             [0,   0,  1]]
             if not self.camera_info_K.any():
                 rospy.logerr("Camera info K matrix empty. Check that the camera info topic is correctly set and publishes a valid K.")
             else:
@@ -508,7 +450,6 @@ class DOTMask():
         """
         Function for live stream video masking
         """
-        
         while not rospy.is_shutdown():
             start_time = time.time()
             self.masked_id = []
@@ -516,18 +457,21 @@ class DOTMask():
             current_depth_frame = self.depth_frame
 
             if len(current_frame)==0  or  len(current_depth_frame)==0 :
-
                 rospy.loginfo_once("DOTmask ready, waiting for frame")
                 time.sleep(0.1)
-            
             else:
-                
                 nn_start_time = time.time()
-                
-                if self.nn == 'yolact' or self.nn == 'yolact++':
+                if self.nn == 'yolact' or self.nn == 'yolact++' or self.nn == 'yolact_edge':
                     frame = torch.from_numpy(current_frame).cuda().float()
                     batch = FastBaseTransform()(frame.unsqueeze(0))
-                    preds = self.net(batch.cuda())
+                    if self.nn == 'yolact_edge':
+                        extras = {"backbone": "full", "interrupt":False, "keep_statistics":False, "moving_statistics":None}
+                        preds = self.net(batch.cuda(), extras=extras)
+                        preds = preds["pred_outs"]
+                    else:
+                        preds = self.net(batch.cuda())
+
+
                     nn_pred_time = time.time()
                     h, w, _ = frame.shape
                     b = {}
@@ -538,7 +482,6 @@ class DOTMask():
                     r['scores'] = copy.deepcopy(b['scores'].cpu().data.numpy())
                     r['rois'] = copy.deepcopy(b['rois'].cpu().data.numpy())
                     r['masks'] = copy.deepcopy(b['masks'].cpu().data.numpy())    
-               
                 elif self.nn == 'mrcnn':
                     results = self.model.detect([current_frame],verbose=1)
                     r = results[0]
@@ -549,8 +492,7 @@ class DOTMask():
                         buff = r['rois'][i]
                         r['rois'][i] = [buff[1],buff[0],buff[3],buff[2]]
                     r['class_ids'] = r['class_ids'] - 1
-                
-                ''' Deprecated, did not enhance speed
+                #''' Deprecated, did not enhance speed
                 j=0
                 for i in range(len(r['class_ids'])):
                     if not np.in1d(r['class_ids'][j], self.selected_classes):
@@ -560,20 +502,18 @@ class DOTMask():
                         r['masks']= np.delete(r['masks'], j, axis=0)
                     else:
                         j=j+1
-                '''
+
                 self.number_observation = min(self.max_number_observation, r['class_ids'].shape[0])
                 for j in range(self.number_observation):
                     if r['scores'][j] < self.score_threshold:
                         self.number_observation = j
                         break
-
                 r['class_ids'] = r['class_ids'][:self.number_observation]
                 r['scores'] = r['scores'][:self.number_observation]
                 r['rois'] = r['rois'][:self.number_observation]
                 r['masks'] = r['masks'][:self.number_observation]
 
                 nn_time = time.time()
-
                 mask_depth = self.get_masking_depth(current_depth_frame, r['masks'])
                 
                 # Read object tf pose
@@ -598,7 +538,6 @@ class DOTMask():
                 if len(r['rois']) == 0:
                     for i in self.objects_dict:
                         self.objects_dict[i]["inactiveNbFrame"] = self.objects_dict[i]["inactiveNbFrame"] + 1
-
                         if self.objects_dict[i]["inactiveNbFrame"] > self._max_inactive_frames:                            
                             objects_to_delete.append(i)
                     
@@ -761,7 +700,7 @@ if __name__ == '__main__':
     rospy.Subscriber("rgb/camera_info", CameraInfo, dotmask.camera_info_callback)
     rospy.Subscriber("depth/image", Image, dotmask.depth_image_callback)
 
-    if args.nn == "yolact" or args.nn == "yolact++":
+    if args.nn == "yolact" or args.nn == "yolact++" or args.nn == "yolact_edge":
         from utils.augmentations import BaseTransform, FastBaseTransform, Resize
         
         from data import COCODetection, get_label_map, MEANS, COLORS
