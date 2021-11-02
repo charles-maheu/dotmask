@@ -87,6 +87,7 @@ class DOTMask():
         if self.nn == 'yolact':
             rospy.loginfo("Selected NN: Yolact")
             # Yoloact imports
+            # HARDCODED PATH - Temporary fix
             sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact/')
             from yolact import Yolact
             from data import cfg, set_cfg, set_dataset
@@ -108,6 +109,7 @@ class DOTMask():
         elif self.nn == 'yolact++':
             rospy.loginfo("Selected NN: Yolact++")
             # Yoloact imports
+            # HARDCODED PATH - Temporary fix
             sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact/')
             from yolact import Yolact
             from data import cfg, set_cfg, set_dataset
@@ -138,6 +140,7 @@ class DOTMask():
                 #    np.save('scripts/proto.npy', proto_data.cpu().numpy())
 
             """
+            # HARDCODED PATH - Temporary fix
             sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact_edge/yolact_edge')
             sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/yolact_edge/')
             from yolact import Yolact
@@ -166,6 +169,7 @@ class DOTMask():
             K.common.set_image_dim_ordering('tf')
 
             # Mask-RCNN
+            # HARDCODED PATH - Temporary fix
             sys.path.append('/home/introlab/catkin_ws_dotmask/src/dotmask/nn/Mask_RCNN/')
             from mrcnn import config
             from mrcnn import utils 
@@ -224,11 +228,12 @@ class DOTMask():
 
         self.selected_classes = [0] #, 56, 67]
         self.dilatation = rospy.get_param('~dilatation', 10)
-        self.score_threshold = rospy.get_param('~score_threshold', 0.1)
-        self.max_number_observation = rospy.get_param('~max_number_observation', 5)
-        self.human_threshold = rospy.get_param('~human_threshold', 0.01)
-        self.object_threshold = rospy.get_param('~object_threshold', 0.3)
-        self.iou_threshold = rospy.get_param('~iou_threshold', 0.9)
+        self.score_threshold = rospy.get_param('~score_threshold', 0.8) #Confidence score treshold for limiting/increasing detections
+        self.max_number_observation = rospy.get_param('~max_number_observation', 5) #Maximum number (+1) of different objects detected for a specific type (person_x where x is the is the "number_observation)
+        self.human_threshold = rospy.get_param('~human_threshold', 0.01) #Minimum velocity to consider a person as "in movement"
+        self.object_threshold = rospy.get_param('~object_threshold', 0.3) #Minimum velocity to consider an object as "in movement"
+        #IoU : Intersection over Union or (Area of overlap)/(Area of union)
+        self.iou_threshold = rospy.get_param('~iou_threshold', 0.9) #Maximum segmentation overlap between frames to consider the object as "in movement"
         self.masked_id = []
         #if input_device == 'xtion':
         #    self.human_threshold = 0.1
@@ -346,7 +351,7 @@ class DOTMask():
         dt = 0.25
 
         try:
-            (transc, rotc) = listener.lookupTransform('/map', self.tf_camera, rospy.Time(0))
+            (transc, rotc) = listener.lookupTransform('map', self.tf_camera, rospy.Time(0))
         except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
             transc = np.array([0.,0.,0.])
             rotc = np.array([0.,0.,0.,1.])
