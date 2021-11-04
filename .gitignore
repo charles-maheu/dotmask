@@ -133,3 +133,10 @@ include/
 data/
 *.h5
 *.pt
+.vscode/c_cpp_properties.json
+.vscode/settings.json
+nn/.vscode/c_cpp_properties.json
+nn/.vscode/settings.json
+weights/yolact_edge_54_800000.pth
+weights/yolact_edge_resnet50_54_800000.pth
+weights/yolact_resnet50_54_800000.pth
